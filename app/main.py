@@ -1,5 +1,9 @@
+import os
 import time
+import threading
+
 import pandas as pd
+from flask import Flask, jsonify
 
 from app.data.market_data import (
     fetch_historical_ohlcv,
@@ -31,6 +35,49 @@ from app.backtest import (
 from app.services.telegram import (
     send_message,
 )
+
+
+# ============================================================
+# WEB SERVICE / RENDER
+# ============================================================
+
+app = Flask(__name__)
+
+bot_status = {
+    "status": "starting",
+    "symbol": None,
+    "timeframe": None,
+    "signal_mode": None,
+    "last_candle": None,
+    "last_error": None,
+}
+
+
+@app.route("/")
+def home():
+
+    return jsonify(
+        {
+            "service": "RSI + MACD Signal Bot",
+            "status": bot_status["status"],
+            "symbol": bot_status["symbol"],
+            "timeframe": bot_status["timeframe"],
+            "signal_mode": bot_status["signal_mode"],
+            "last_candle": bot_status["last_candle"],
+            "last_error": bot_status["last_error"],
+        }
+    )
+
+
+@app.route("/health")
+def health():
+
+    return jsonify(
+        {
+            "status": bot_status["status"],
+            "service": "healthy",
+        }
+    ), 200
 
 
 # ============================================================
@@ -824,6 +871,20 @@ def run_live_mode():
 
     print()
 
+    # ========================================================
+    # UPDATE WEB SERVICE STATUS
+    # ========================================================
+
+    bot_status["status"] = "running"
+
+    bot_status["symbol"] = SYMBOL
+
+    bot_status["timeframe"] = TIMEFRAME
+
+    bot_status["signal_mode"] = LIVE_SIGNAL_MODE.value
+
+    bot_status["last_error"] = None
+
     signal_engine = create_signal_engine(
         LIVE_SIGNAL_MODE
     )
@@ -885,6 +946,12 @@ def run_live_mode():
                 f"Latest closed candle: "
                 f"{candle_time}"
             )
+
+            bot_status["last_candle"] = str(
+                candle_time
+            )
+
+            bot_status["last_error"] = None
 
             # ------------------------------------------------
             # Prevent duplicate processing
@@ -1198,6 +1265,8 @@ def run_live_mode():
                 "Live monitor stopped."
             )
 
+            bot_status["status"] = "stopped"
+
             break
 
         except Exception as error:
@@ -1208,9 +1277,30 @@ def run_live_mode():
                 f"ERROR: {error}"
             )
 
+            bot_status["last_error"] = str(
+                error
+            )
+
         time.sleep(
             CHECK_INTERVAL
         )
+
+
+# ============================================================
+# START LIVE BOT IN BACKGROUND
+# ============================================================
+
+def start_live_bot():
+
+    live_thread = threading.Thread(
+        target=run_live_mode,
+        daemon=True,
+        name="signal-monitor",
+    )
+
+    live_thread.start()
+
+    return live_thread
 
 
 # ============================================================
@@ -1219,25 +1309,79 @@ def run_live_mode():
 
 def main():
 
+    port = int(
+        os.getenv(
+            "PORT",
+            "10000",
+        )
+    )
+
+    host = "0.0.0.0"
+
+    print()
+
+    print("=" * 70)
+
+    print(
+        "STARTING RSI + MACD SIGNAL BOT WEB SERVICE"
+    )
+
+    print("=" * 70)
+
+    print()
+
     if RUN_MODE == "BACKTEST":
+
+        bot_status["status"] = "backtest"
 
         run_backtest_mode()
 
-    elif RUN_MODE == "LIVE":
+        return
 
-        run_live_mode()
+    if RUN_MODE != "LIVE":
 
-    else:
+        bot_status["status"] = "error"
 
-        print()
-
-        print(
-            "Invalid RUN_MODE."
-        )
-
-        print(
+        bot_status["last_error"] = (
+            "Invalid RUN_MODE. "
             'Use "BACKTEST" or "LIVE".'
         )
+
+        print(
+            bot_status["last_error"]
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # START SIGNAL BOT
+    # --------------------------------------------------------
+
+    start_live_bot()
+
+    # --------------------------------------------------------
+    # START WEB SERVER FOR RENDER
+    # --------------------------------------------------------
+
+    print()
+
+    print(
+        f"Web server starting on "
+        f"http://{host}:{port}"
+    )
+
+    print(
+        "Health check endpoint: /health"
+    )
+
+    print()
+
+    app.run(
+        host=host,
+        port=port,
+        debug=False,
+        use_reloader=False,
+    )
 
 
 # ============================================================
